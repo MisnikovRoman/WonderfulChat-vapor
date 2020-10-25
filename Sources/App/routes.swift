@@ -1,11 +1,15 @@
 import Vapor
 
+struct Chat: Content {
+    let id: String
+}
+
 func routes(_ app: Application) throws {
     app.get { req in
         return "It works!"
     }
 
-    app.get("hello") { req -> String in
-        return "Hello, world!"
+    app.get("chat") { req -> Chat in
+        return Chat(id: "Roman M.")
     }
 }
