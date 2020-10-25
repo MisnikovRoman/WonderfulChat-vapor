@@ -10,6 +10,6 @@ func routes(_ app: Application) throws {
     }
 
     app.get("chat") { req -> Chat in
-        return Chat(id: "Roman M.")
+        return Chat(id: "\(Int.random(in: 0...1000))")
     }
 }
