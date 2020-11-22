@@ -9,6 +9,10 @@ import Vapor
 
 class ChatController {
     
+    // Echo bot which replays with same message to sender
+    private let isEchoBotActive = true
+    private let echoBot = User(id: "echo_bot_0", name: "🤖 Echo Bot")
+    
     private var users = Set<ConnectedUser>()
 
     func createChat(_ request: Request, socket: WebSocket) {
@@ -19,23 +23,28 @@ class ChatController {
         onCreateConnection(newUser: newUser)
         
         socket.onText { [weak self] socket, text in
-            print("💬", text)
+            guard let self = self else { return }
+            print("💬 Incoming text message:", text)
+            
             if let message = text.toModel(Message.self) {
-                // resend message
-                let sender = self?.users.first { $0.id == message.senderId}
-                let receiver = self?.users.first { $0.id != message.senderId } // ⚠️ Отправка случайному пользователю
-                receiver?.webSocket.send(text)
-                print("↔️ Send from \"\(sender?.name ?? "")\" to \"\(receiver?.name ?? "")\" message \"\(message.text)\"")
+                if self.isEchoBotActive, message.receiverId == self.echoBot.id {
+                    self.replyAsEchoBot(to: message.senderId, with: message.text)
+                } else {
+                    self.resendToReceiver(message)
+                }
             }
         }
         
-        _ = socket.onClose.whenComplete { [weak self] _ in
-            print("👣 User closed session \(request.headers["name"].first)")
+        socket.onClose.whenComplete { [weak self] _ in
+            self?.users.removeAll { $0.id == request.headers["id"].first }
+            print("👣 User closed session \(request.headers["name"].first ?? "")")
             self?.notifyActiveUsers()
         }
     }
 }
 
+
+// MARK: - Private
 private extension ChatController {
     
     func parseUser(request: Request, webSocket: WebSocket) -> ConnectedUser? {
@@ -46,30 +55,57 @@ private extension ChatController {
     
     func onCreateConnection(newUser: ConnectedUser) {
         print("👋🏻 New user connected: \(newUser.name)")
+        
+        users
+            .filter { $0.id == newUser.id }
+            .forEach { $0.webSocket.close(code: .init(codeNumber: 4001)) } // дублирующийся пользователь
+        
         users.insert(newUser)
         notifyActiveUsers()
     }
     
+    // отправка всем активным пользователям обновленного списка активных пользователей
     func notifyActiveUsers() {
         users.removeAll { $0.webSocket.isClosed }
         
         print("👨‍👩‍👦‍👦 Connected users: \(users.map { $0.name })")
         
         users.forEach { user in
-            let activeUsersExceptSelf = users
+            var activeUsersExceptSelf = users
                 .filter { !$0.webSocket.isClosed }
                 .filter { $0.id != user.id }
                 .map { User(id: $0.id, name: $0.name) }
-                .toJsonString()
-            user.webSocket.send(activeUsersExceptSelf)
+            
+            // add echo bot to list of active users
+            isEchoBotActive ? activeUsersExceptSelf.append(echoBot) : ()
+            
+            user.webSocket.send(activeUsersExceptSelf.toJsonString())
         }
+    }
+    
+    // пересылка сообщения от отправителя получателю
+    func resendToReceiver(_ message: Message) {
+        let sender = users.first { $0.id == message.senderId }
+        let receiver = users.first { $0.id != message.senderId }
+        
+        receiver?.webSocket.send(message.toJsonString())
+        
+        print("↔️ Send from \"\(sender?.name ?? "")\" to \"\(receiver?.name ?? "")\" message \"\(message.text)\"")
+    }
+    
+    func replyAsEchoBot(to userId: String, with message: String) {
+        guard let user = users.first(where: { $0.id == userId }) else { return }
+        let encodedMessage = Message(id: UUID().uuidString, senderId: echoBot.id, receiverId: user.id, text: message).toJsonString()
+        user.webSocket.send(encodedMessage)
+        print("🤖 Echoed to \"\(userId)\" with \"\(message)\"")
     }
 }
 
+// MARK: - Set extension
 private extension Set {
     mutating func removeAll(where condition: (Element) -> Bool) {
         forEach {
-            if condition($0) {
+            if condition($0) && self.contains($0) {
                 self.remove($0)
             }
         }
@@ -96,3 +132,4 @@ private extension Encodable {
         return json
     }
 }
+
